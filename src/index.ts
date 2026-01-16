@@ -39,6 +39,7 @@ const validRoutes = new Map([
   ["scoreboard", cache_45s],
   ["schedule-alt", cache_30m],
   ["news", cache_30m],
+  ["brackets", cache_30m],
 ]);
 
 /** log message to console with timestamp */
@@ -529,6 +530,107 @@ export const app = new Elysia()
   },
     { detail: { hide: true } }
   )
+  // brackets route to fetch and parse bracket structure with game data
+  .get("/brackets/:sport/:division/:year", async ({ params, cache, cacheKey, status }) => {
+    if (cache.has(cacheKey)) {
+      return cache.get(cacheKey);
+    }
+
+    const { sport, division, year } = params;
+    const url = `https://www.ncaa.com/brackets/${sport}/${division}/${year}`;
+
+    log(`Fetching bracket from ${url}`);
+
+    try {
+      // Fetch and parse HTML structure
+      const response = await fetch(url);
+      if (!response.ok) {
+        return status(404, "Bracket not found");
+      }
+
+      const html = await response.text();
+      const { document } = parseHTML(html);
+
+      // Parse bracket structure from HTML
+      const structure = parseBracketStructure(document);
+
+      // Fetch championship games from API
+      const games = await fetchChampionshipGames(sport, division, year);
+
+      // Transform games to our format
+      const formattedGames = games.map((game: any) => ({
+        gameId: game.contestId?.toString() || "",
+        startDate: game.startDate || "",
+        startTime: game.startTime || "",
+        gameState: game.gameState || "",
+        currentPeriod: game.currentPeriod || "",
+        bracketRound: game.bracketRound || "",
+        url: game.url || "",
+        teams: (game.teams || []).map((team: any) => ({
+          name: team.nameShort || "",
+          nameFull: team.nameFull || "",
+          seed: team.seed?.toString() || "",
+          score: team.score?.toString() || "",
+          winner: team.isWinner || false,
+          rank: team.teamRank?.toString() || "",
+        })),
+      }));
+
+      // Organize games by round if possible
+      // Group by bracketRound field if available, otherwise distribute evenly
+      const gamesByRound = new Map<string, any[]>();
+
+      for (const game of formattedGames) {
+        const roundKey = game.bracketRound || "Unknown";
+        if (!gamesByRound.has(roundKey)) {
+          gamesByRound.set(roundKey, []);
+        }
+        gamesByRound.get(roundKey)?.push(game);
+      }
+
+      // Build rounds with games
+      const roundsWithGames = structure.rounds.map((round, index) => {
+        // Try to match round by name or index
+        let roundGames: any[] = [];
+
+        // Check if any games have a bracketRound matching this round's name
+        for (const [roundName, gamesInRound] of gamesByRound.entries()) {
+          if (roundName.toLowerCase().includes(round.name.toLowerCase()) ||
+              round.name.toLowerCase().includes(roundName.toLowerCase())) {
+            roundGames = gamesInRound;
+            break;
+          }
+        }
+
+        return {
+          name: round.name,
+          games: roundGames,
+        };
+      });
+
+      // Build response
+      const bracketData = {
+        sport: structure.sport,
+        title: structure.title,
+        year,
+        bracketId: structure.bracketId,
+        regions: structure.regions,
+        rounds: games.length > 0 ? roundsWithGames : structure.rounds.map((r) => ({
+          name: r.name,
+          games: [],
+        })),
+      };
+
+      const data = JSON.stringify(bracketData);
+      cache.set(cacheKey, data);
+      return data;
+    } catch (err) {
+      log(`Error fetching bracket: ${err}`);
+      return status(500, "Error fetching bracket data");
+    }
+  },
+    { detail: { hide: true } }
+  )
   // all other routes fetch data by scraping ncaa.com
   .get("/*", async ({ query: { page }, path, cache, cacheKey }) => {
     if (cache.has(cacheKey)) {
@@ -748,6 +850,98 @@ function getStandingsHeaders(table: HTMLTableElement) {
   }
 
   return headings;
+}
+
+/**
+ * Parse bracket structure from HTML
+ * @param document - parsed HTML document
+ * @returns bracket metadata and structure
+ */
+function parseBracketStructure(document: Document) {
+  // Extract sport and title from metadata
+  const sport = document.querySelector("h2.page-title")?.textContent?.trim() ?? "";
+  const title = document.querySelector("h1")?.textContent?.trim() ??
+                document.title.split(" |")[0];
+
+  // Extract bracket ID (e.g., bracket_16, bracket_64)
+  const bracketContainer = document.querySelector('[id^="bracket_"]');
+  const bracketId = bracketContainer?.id ?? "";
+
+  // Extract round headers
+  const roundElements = document.querySelectorAll(".rounds-header .round");
+  const rounds: Array<{ name: string; number: number }> = [];
+
+  for (let i = 0; i < roundElements.length; i++) {
+    const roundEl = roundElements[i];
+    const roundName = roundEl.querySelector("h4")?.textContent?.trim() ??
+                      roundEl.querySelector("h5")?.textContent?.trim() ??
+                      `Round ${i + 1}`;
+    rounds.push({
+      name: roundName,
+      number: i + 1,
+    });
+  }
+
+  // Extract regions if present (for larger brackets)
+  const regionElements = document.querySelectorAll(".region");
+  const regions: string[] = [];
+
+  for (const regionEl of regionElements) {
+    const regionName = regionEl.querySelector("h3")?.textContent?.trim();
+    if (regionName) {
+      regions.push(regionName);
+    }
+  }
+
+  return {
+    sport,
+    title,
+    bracketId,
+    rounds,
+    regions,
+  };
+}
+
+/**
+ * Fetch championship games from scoreboard API
+ * @param sport - sport parameter
+ * @param division - division parameter
+ * @param year - year parameter
+ * @returns array of games
+ */
+async function fetchChampionshipGames(sport: string, division: string, year: string) {
+  try {
+    // Get sport code and division code
+    const sportCode = newCodesBySport[sport]?.code;
+    if (!sportCode) {
+      return [];
+    }
+
+    const divisionCode = getDivisionCode(sport, division);
+    if (!divisionCode) {
+      return [];
+    }
+
+    // Try to fetch championship games using the championship hash
+    const hash = "833b812cd33218fbffa93fa81646e843d0b9bbca75283b2a33a0bf6d65ef9d27";
+    const url = `https://sdataprod.ncaa.com/?extensions={"persistedQuery":{"version":1,"sha256Hash":"${hash}"}}&variables={"sportCode":"${sportCode}","division":${divisionCode},"seasonYear":${year}}`;
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const championships = data?.data?.championships || [];
+
+    // Find championships with games and flatten
+    const allGames = championships.flatMap((champ: any) => champ.games || []);
+
+    return allGames;
+  } catch (err) {
+    log(`Error fetching championship games: ${err}`);
+    return [];
+  }
 }
 
 process.on("SIGINT", async () => {

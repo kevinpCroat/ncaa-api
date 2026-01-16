@@ -198,6 +198,29 @@ describe("General", () => {
       expect(response.status).toBe(404);
     }
   });
+  it("brackets route returns structure", async () => {
+    const response = await app.handle(
+      new Request("http://localhost/brackets/fieldhockey/d2/2025")
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=1800");
+    const data = await response.json();
+    expect(data).toContainKeys(["sport", "title", "year", "rounds"]);
+    expect(data.rounds).toBeArray();
+    expect(data.year).toBe("2025");
+  });
+  it("brackets route for basketball returns structure", async () => {
+    const response = await app.handle(
+      new Request("http://localhost/brackets/basketball-men/d1/2024")
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data).toContainKeys(["sport", "title", "year", "rounds"]);
+    expect(data.rounds).toBeArray();
+    if (data.rounds.length > 0) {
+      expect(data.rounds[0]).toContainKeys(["name", "games"]);
+    }
+  });
 });
 
 describe("Header validation", () => {

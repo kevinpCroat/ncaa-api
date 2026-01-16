@@ -255,6 +255,37 @@ export const openapiSpec = openapi({
           ] as OpenAPIV3.ParameterObject[],
         },
       },
+      "/brackets/{sport}/{division}/{year}": {
+        get: {
+          responses: {},
+          summary: "Brackets",
+          description:
+            "Championship brackets for a given sport, division, and year. Returns bracket structure with games organized by round.\n\nhttps://www.ncaa.com/brackets/fieldhockey/d2/2025\n\nhttps://www.ncaa.com/brackets/basketball-men/d1/2024",
+          parameters: [
+            {
+              name: "sport",
+              in: "path",
+              schema: { type: "string" },
+              required: true,
+              examples: sportExamples,
+            },
+            {
+              name: "division",
+              in: "path",
+              schema: { type: "string" },
+              required: true,
+              examples: divisionExamples,
+            },
+            {
+              name: "year",
+              in: "path",
+              schema: { type: "string" },
+              required: true,
+              examples: makeExamples(["2024", "2025"]),
+            },
+          ] as OpenAPIV3.ParameterObject[],
+        },
+      },
       "/news/{sport}/{division}": {
         get: {
           responses: {},
